@@ -111,6 +111,16 @@ const uint32_t BUTTON_BORDER = 2;
 const uint32_t BUTTON_X = ILI9488_LCD_WIDTH/2;
 const uint32_t BUTTON_Y = ILI9488_LCD_HEIGHT/2;
 	
+#define BUT_PIO           PIOD
+#define BUT_PIO_ID        ID_PIOD
+#define BUT_PIO_IDX       28u
+#define BUT_IDX_MASK  (1u << BUT_PIO_IDX)
+
+#define BUT2_PIO          PIOC
+#define BUT2_PIO_ID        ID_PIOC
+#define BUT2_PIO_IDX       31u
+#define BUT2_IDX_MASK  (1u << BUT2_PIO_IDX)
+
 /************************************************************************/
 /* RTOS                                                                  */
 /************************************************************************/
@@ -151,6 +161,8 @@ QueueHandle_t xQueueTouch;
 
 
 volatile char temp_text[32];
+volatile char potencia[32];
+
 
 /* Canal do sensor de temperatura */
 #define AFEC_CHANNEL_TEMP_SENSOR 11
@@ -160,10 +172,27 @@ volatile char temp_text[32];
 QueueHandle_t xQueue1;
 
 volatile uint32_t temp_value;
+volatile uint32_t pot_value;
 
 /************************************************************************/
 /* Callbacks: / Handler                                                 */
 /************************************************************************/
+
+SemaphoreHandle_t xSemaphore;
+SemaphoreHandle_t xSemaphore2;
+
+void but_callback(void){
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+	printf("but_callback \n");
+	xSemaphoreGiveFromISR(xSemaphore, &xHigherPriorityTaskWoken);
+	printf("semafaro tx \n");
+}
+void but_callback2(void){
+	BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+	printf("but_callback2222 \n");
+	xSemaphoreGiveFromISR(xSemaphore2, &xHigherPriorityTaskWoken);
+	printf("semafaro tx2222 \n");
+}
 static void AFEC_Temp_callback(void)
 {
 	temp_value = afec_channel_get_value(AFEC0, AFEC_CHANNEL_TEMP_SENSOR);
@@ -385,8 +414,11 @@ void draw_termometro(void) {
 }
 
 void draw_ar(void) {
+	ili9488_set_foreground_color(COLOR_CONVERT(COLOR_WHITE));
+	ili9488_draw_filled_rectangle(0,400, 200, 450);
 	ili9488_draw_pixmap(30,380, ar.width, ar.height+2, ar.data);
-	font_draw_text(&digital52, "100%", 120, 400, 1);
+	sprintf(temp_text, "%d", pot_value);
+	font_draw_text(&digital52, temp_text, 120, 400, 1);
 }
 
 
@@ -467,6 +499,50 @@ void mxt_handler(struct mxt_device *device, uint *x, uint *y)
 	} while ((mxt_is_message_pending(device)) & (i < MAX_ENTRIES));
 }
 
+
+////// btons init
+
+// Inicializa botao SW0 do kit com interrupcao
+void io_init(void)
+{
+	// Inicializa clock do perif?rico PIO responsavel pelo botao
+	pmc_enable_periph_clk(BUT_PIO_ID);
+	pmc_enable_periph_clk(BUT2_PIO_ID);
+
+	// Configura PIO para lidar com o pino do bot?o como entrada
+	// com pull-up
+	pio_configure(BUT_PIO, PIO_INPUT, BUT_IDX_MASK, PIO_PULLUP);
+	pio_configure(BUT2_PIO, PIO_INPUT, BUT2_IDX_MASK, PIO_PULLUP);
+
+	// Configura interrup??o no pino referente ao botao e associa
+	// fun??o de callback caso uma interrup??o for gerada
+	// a fun??o de callback ? a: but_callback()
+	pio_handler_set(BUT_PIO,
+	BUT_PIO_ID,
+	BUT_IDX_MASK,
+	PIO_IT_FALL_EDGE,
+	but_callback);
+	
+	pio_handler_set(BUT2_PIO,
+	BUT2_PIO_ID,
+	BUT2_IDX_MASK,
+	PIO_IT_FALL_EDGE,
+	but_callback2);
+
+	// Ativa interrup??o
+	pio_enable_interrupt(BUT_PIO, BUT_IDX_MASK);
+	pio_enable_interrupt(BUT2_PIO, BUT2_IDX_MASK);
+
+	// Configura NVIC para receber interrupcoes do PIO do botao
+	// com prioridade 4 (quanto mais pr?ximo de 0 maior)
+	NVIC_EnableIRQ(BUT_PIO_ID);
+	NVIC_SetPriority(BUT_PIO_ID, 4); // Prioridade 4
+	NVIC_EnableIRQ(BUT2_PIO_ID);
+	NVIC_SetPriority(BUT2_PIO_ID, 4);
+}
+
+
+
 /************************************************************************/
 /* tasks                                                                */
 /************************************************************************/
@@ -540,9 +616,40 @@ void task_adc(void){
   while( true){
 	  afec_start_software_conversion(AFEC0);
 	  vTaskDelay(500);
-	  printf(" Temp AFEC: %d \r \n ",convert_adc_to_temp(temp_value));
+	  //printf(" Temp AFEC: %d \r \n ",convert_adc_to_temp(temp_value));
 	  
   }
+}
+
+void task_button(void){
+	/* We are using the semaphore for synchronisation so we create a binary
+        semaphore rather than a mutex.  We must make sure that the interrupt
+        does not attempt to use the semaphore before it is created! */
+	xSemaphore = xSemaphoreCreateBinary();
+	xSemaphore2 = xSemaphoreCreateBinary();
+	
+	//int a =0;
+	//sprintf(potencia, "%d", a);
+	
+	
+	
+
+        /* devemos iniciar a interrupcao no pino somente apos termos alocado
+           os recursos (no caso semaforo), nessa funcao inicializamos 
+           o botao e seu callback*/
+    io_init();
+
+	if (xSemaphore == NULL)
+		printf("falha em criar o semaforo \n");
+
+	for (;;) {
+		if( xSemaphoreTake(xSemaphore, ( TickType_t ) 500) == pdTRUE ){
+			pot_value += 5;
+		}
+		if( xSemaphoreTake(xSemaphore2, ( TickType_t ) 500) == pdTRUE && pot_value>0 ){
+			pot_value -= 5;
+		}
+	}
 }
 
 void task_lcd(void){
@@ -569,6 +676,7 @@ void task_lcd(void){
 	   
      }
 	 draw_termometro();
+	 draw_ar();
 	 vTaskDelay(300);
   }	 
 }
@@ -608,6 +716,10 @@ int main(void)
   }
   
   if (xTaskCreate(task_adc, "lcd", TASK_ADC_STACK_SIZE, NULL, TASK_ADC_STACK_PRIORITY, NULL) != pdPASS) {
+	  printf("Failed to create test led task\r\n");
+  }
+  
+  if (xTaskCreate(task_button, "lcd", TASK_ADC_STACK_SIZE, NULL, TASK_ADC_STACK_PRIORITY, NULL) != pdPASS) {
 	  printf("Failed to create test led task\r\n");
   }
   
