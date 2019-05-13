@@ -149,6 +149,9 @@ QueueHandle_t xQueueTouch;
 /** The conversion data value */
 //volatile uint32_t g_ul_value = 0;
 
+
+volatile char temp_text[32];
+
 /* Canal do sensor de temperatura */
 #define AFEC_CHANNEL_TEMP_SENSOR 11
 
@@ -156,13 +159,14 @@ QueueHandle_t xQueueTouch;
 /// QUeueuee
 QueueHandle_t xQueue1;
 
+volatile uint32_t temp_value;
 
 /************************************************************************/
 /* Callbacks: / Handler                                                 */
 /************************************************************************/
 static void AFEC_Temp_callback(void)
 {
-	int result = afec_channel_get_value(AFEC0, AFEC_CHANNEL_TEMP_SENSOR);
+	temp_value = afec_channel_get_value(AFEC0, AFEC_CHANNEL_TEMP_SENSOR);
 	//xQueueSendFromISR( xQueue1, &result, NULL);
 	
 }
@@ -341,6 +345,25 @@ void font_draw_text(tFont *font, const char *text, int x, int y, int spacing) {
 	}
 }
 
+static int32_t convert_adc_to_temp(int32_t ADC_value){
+
+  int32_t ul_vol;
+  int32_t ul_temp;
+
+  /*
+   * converte bits -> tens?o (Volts)
+   */
+	ul_vol = ADC_value * VOLT_REF / (float) MAX_DIGITAL;
+
+  /*
+   * According to datasheet, The output voltage VT = 0.72V at 27C
+   * and the temperature slope dVT/dT = 2.33 mV/C
+   */
+  ul_temp = (ul_vol - 720)  * 100 / 233 + 27;
+  return(ul_temp);
+}
+
+
 void draw_screen(void) {
 	ili9488_set_foreground_color(COLOR_CONVERT(COLOR_WHITE));
 	ili9488_draw_filled_rectangle(0, 0, ILI9488_LCD_WIDTH-1, ILI9488_LCD_HEIGHT-1);
@@ -357,7 +380,8 @@ void draw_soneca(void) {
 
 void draw_termometro(void) {
 	ili9488_draw_pixmap(30,200, termometro.width, termometro.height+2, termometro.data);
-	font_draw_text(&digital52, "15", 100, 220, 1);
+	sprintf(temp_text, "%d", convert_adc_to_temp(temp_value));
+	font_draw_text(&digital52, temp_text, 100, 220, 1);
 }
 
 void draw_ar(void) {
@@ -511,31 +535,12 @@ static void config_ADC_TEMP(void){
 	afec_channel_enable(AFEC0, AFEC_CHANNEL_TEMP_SENSOR);
 }
 
-static int32_t convert_adc_to_temp(int32_t ADC_value){
-
-  int32_t ul_vol;
-  int32_t ul_temp;
-
-  /*
-   * converte bits -> tens?o (Volts)
-   */
-	ul_vol = ADC_value * VOLT_REF / (float) MAX_DIGITAL;
-
-  /*
-   * According to datasheet, The output voltage VT = 0.72V at 27C
-   * and the temperature slope dVT/dT = 2.33 mV/C
-   */
-  ul_temp = (ul_vol - 720)  * 100 / 233 + 27;
-  return(ul_temp);
-}
 
 void task_adc(void){
-  volatile uint32_t g_ul_value = 0;
   while( true){
 	  afec_start_software_conversion(AFEC0);
-	  g_ul_value = afec_channel_get_value(AFEC0, AFEC_CHANNEL_TEMP_SENSOR);
 	  vTaskDelay(500);
-	  printf(" Temp AFEC: %d \r \n ",convert_adc_to_temp(g_ul_value));
+	  printf(" Temp AFEC: %d \r \n ",convert_adc_to_temp(temp_value));
 	  
   }
 }
@@ -561,7 +566,10 @@ void task_lcd(void){
      if (xQueueReceive( xQueueTouch, &(touch), ( TickType_t )  500 / portTICK_PERIOD_MS)) {
        update_screen(touch.x, touch.y);
        printf("x:%d y:%d\n", touch.x, touch.y);
-     }     
+	   
+     }
+	 draw_termometro();
+	 vTaskDelay(300);
   }	 
 }
 
