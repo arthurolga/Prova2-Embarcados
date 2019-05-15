@@ -172,7 +172,8 @@ volatile char potencia[32];
 QueueHandle_t xQueue1;
 
 volatile uint32_t temp_value;
-volatile uint32_t pot_value;
+volatile uint32_t pot_value = 0;
+const char percent[32] = "%";
 
 /************************************************************************/
 /* Callbacks: / Handler                                                 */
@@ -414,10 +415,9 @@ void draw_termometro(void) {
 }
 
 void draw_ar(void) {
-	ili9488_set_foreground_color(COLOR_CONVERT(COLOR_WHITE));
-	ili9488_draw_filled_rectangle(0,400, 200, 450);
+	
 	ili9488_draw_pixmap(30,380, ar.width, ar.height+2, ar.data);
-	sprintf(temp_text, "%d", pot_value);
+	sprintf(temp_text, "%3d%%", pot_value);
 	font_draw_text(&digital52, temp_text, 120, 400, 1);
 }
 
@@ -615,7 +615,7 @@ static void config_ADC_TEMP(void){
 void task_adc(void){
   while( true){
 	  afec_start_software_conversion(AFEC0);
-	  vTaskDelay(500);
+	  vTaskDelay(800);
 	  //printf(" Temp AFEC: %d \r \n ",convert_adc_to_temp(temp_value));
 	  
   }
@@ -643,11 +643,11 @@ void task_button(void){
 		printf("falha em criar o semaforo \n");
 
 	for (;;) {
-		if( xSemaphoreTake(xSemaphore, ( TickType_t ) 500) == pdTRUE ){
-			pot_value += 5;
-		}
-		if( xSemaphoreTake(xSemaphore2, ( TickType_t ) 500) == pdTRUE && pot_value>0 ){
+		if( xSemaphoreTake(xSemaphore, ( TickType_t ) 500) == pdTRUE && pot_value>0 ){
 			pot_value -= 5;
+		}
+		if( xSemaphoreTake(xSemaphore2, ( TickType_t ) 500) == pdTRUE && pot_value < 100  ){
+			pot_value += 5;
 		}
 	}
 }
