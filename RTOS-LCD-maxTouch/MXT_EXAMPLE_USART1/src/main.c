@@ -121,6 +121,24 @@ const uint32_t BUTTON_Y = ILI9488_LCD_HEIGHT/2;
 #define BUT2_PIO_IDX       31u
 #define BUT2_IDX_MASK  (1u << BUT2_PIO_IDX)
 
+#define PIO_PWM_0 PIOA
+#define ID_PIO_PWM_0 ID_PIOA
+#define MASK_PIN_PWM_0 (1 << 0)
+
+/** PWM frequency in Hz */
+#define PWM_FREQUENCY      1000
+
+/** Period value of PWM output waveform */
+#define PERIOD_VALUE       100
+
+/** Initial duty cycle value */
+#define INIT_DUTY_VALUE    0
+
+/** PWM channel instance for LEDs */
+pwm_channel_t g_pwm_channel_led;
+
+
+
 /************************************************************************/
 /* RTOS                                                                  */
 /************************************************************************/
@@ -146,7 +164,7 @@ QueueHandle_t xQueueTouch;
 
 /** The maximal digital value */
 /** 2^12 - 1                  */
-#define MAX_DIGITAL     (4095)
+#define MAX_DIGITAL     (4095UL)
 
 /************************************************************************/
 /* Globals                                                              */
@@ -165,7 +183,7 @@ volatile char potencia[32];
 
 
 /* Canal do sensor de temperatura */
-#define AFEC_CHANNEL_TEMP_SENSOR 11
+#define AFEC_CHANNEL_TEMP_SENSOR AFEC_CHANNEL_0
 
 
 /// QUeueuee
@@ -173,7 +191,7 @@ QueueHandle_t xQueue1;
 
 volatile uint32_t temp_value;
 volatile uint32_t pot_value = 0;
-const char percent[32] = "%";
+//const char percent[32] = "%";
 
 /************************************************************************/
 /* Callbacks: / Handler                                                 */
@@ -201,8 +219,45 @@ static void AFEC_Temp_callback(void)
 	
 }
 /**
- * \brief AFEC interrupt callback function.
+ * Config do PWM
  */
+
+void PWM0_init(uint channel, uint duty){
+	/* Enable PWM peripheral clock */
+	pmc_enable_periph_clk(ID_PWM0);
+
+	/* Disable PWM channels for LEDs */
+	pwm_channel_disable(PWM0, PIN_PWM_LED0_CHANNEL);
+
+	/* Set PWM clock A as PWM_FREQUENCY*PERIOD_VALUE (clock B is not used) */
+	pwm_clock_t clock_setting = {
+		.ul_clka = PWM_FREQUENCY * PERIOD_VALUE,
+		.ul_clkb = 0,
+		.ul_mck = sysclk_get_peripheral_hz()
+	};
+	
+	pwm_init(PWM0, &clock_setting);
+
+	/* Initialize PWM channel for LED0 */
+	/* Period is left-aligned */
+	g_pwm_channel_led.alignment = PWM_ALIGN_CENTER;
+	/* Output waveform starts at a low level */
+	g_pwm_channel_led.polarity = PWM_HIGH;
+	/* Use PWM clock A as source clock */
+	g_pwm_channel_led.ul_prescaler = PWM_CMR_CPRE_CLKA;
+	/* Period value of output waveform */
+	g_pwm_channel_led.ul_period = PERIOD_VALUE;
+	/* Duty cycle value of output waveform */
+	g_pwm_channel_led.ul_duty = duty;
+	g_pwm_channel_led.channel = channel;
+	pwm_channel_init(PWM0, &g_pwm_channel_led);
+	
+	/* Enable PWM channels for LEDs */
+	pwm_channel_enable(PWM0, channel);
+}
+
+
+
 
 /************************************************************************/
 /* RTOS hooks                                                           */
@@ -377,20 +432,7 @@ void font_draw_text(tFont *font, const char *text, int x, int y, int spacing) {
 
 static int32_t convert_adc_to_temp(int32_t ADC_value){
 
-  int32_t ul_vol;
-  int32_t ul_temp;
-
-  /*
-   * converte bits -> tens?o (Volts)
-   */
-	ul_vol = ADC_value * VOLT_REF / (float) MAX_DIGITAL;
-
-  /*
-   * According to datasheet, The output voltage VT = 0.72V at 27C
-   * and the temperature slope dVT/dT = 2.33 mV/C
-   */
-  ul_temp = (ul_vol - 720)  * 100 / 233 + 27;
-  return(ul_temp);
+  return(ADC_value*(100+1)/MAX_DIGITAL);
 }
 
 
@@ -410,7 +452,7 @@ void draw_soneca(void) {
 
 void draw_termometro(void) {
 	ili9488_draw_pixmap(30,200, termometro.width, termometro.height+2, termometro.data);
-	sprintf(temp_text, "%d", convert_adc_to_temp(temp_value));
+	sprintf(temp_text, "%3d", convert_adc_to_temp(temp_value));
 	font_draw_text(&digital52, temp_text, 100, 220, 1);
 }
 
@@ -586,7 +628,7 @@ static void config_ADC_TEMP(void){
 	afec_set_trigger(AFEC0, AFEC_TRIG_SW);
 
 	/* configura call back */
-	afec_set_callback(AFEC0, AFEC_INTERRUPT_EOC_11,	AFEC_Temp_callback, 1);
+	afec_set_callback(AFEC0, AFEC_INTERRUPT_EOC_0,	AFEC_Temp_callback, 1);
 
 	/*** Configuracao espec?fica do canal AFEC ***/
 	struct afec_ch_config afec_ch_cfg;
@@ -644,10 +686,10 @@ void task_button(void){
 
 	for (;;) {
 		if( xSemaphoreTake(xSemaphore, ( TickType_t ) 500) == pdTRUE && pot_value>0 ){
-			pot_value -= 5;
+			pot_value -= 10;
 		}
 		if( xSemaphoreTake(xSemaphore2, ( TickType_t ) 500) == pdTRUE && pot_value < 100  ){
-			pot_value += 5;
+			pot_value += 10;
 		}
 	}
 }
@@ -681,6 +723,17 @@ void task_lcd(void){
   }	 
 }
 
+void task_pwm(void){
+	uint duty = 0;
+	PWM0_init(0, duty);
+	while(true){
+		pwm_channel_update_duty(PWM0, &g_pwm_channel_led, 100-duty);
+		duty = pot_value;
+		//printf(duty);
+	}
+	
+}
+
 
 /************************************************************************/
 /* main                                                                 */
@@ -701,6 +754,12 @@ int main(void)
 	ioport_init();
 
 	config_ADC_TEMP();
+	 /* Configura pino para ser controlado pelo PWM */
+
+	 pmc_enable_periph_clk(ID_PIO_PWM_0);
+
+	 pio_set_peripheral(PIO_PWM_0, PIO_PERIPH_A, MASK_PIN_PWM_0 );
+	
 	
 	/* Initialize stdio on USART */
 	stdio_serial_init(USART_SERIAL_EXAMPLE, &usart_serial_options);
@@ -722,6 +781,11 @@ int main(void)
   if (xTaskCreate(task_button, "lcd", TASK_ADC_STACK_SIZE, NULL, TASK_ADC_STACK_PRIORITY, NULL) != pdPASS) {
 	  printf("Failed to create test led task\r\n");
   }
+  
+  if (xTaskCreate(task_pwm, "pwm", TASK_ADC_STACK_SIZE, NULL, TASK_ADC_STACK_PRIORITY, NULL) != pdPASS) {
+	  printf("Failed to create test led task\r\n");
+  }
+  
   
   
   
